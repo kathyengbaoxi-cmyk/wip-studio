@@ -77,8 +77,8 @@ function t(s){return document.createTextNode(String(s==null?"":s))}
 // ── State ────────────────────────────────────────────────────────
 var S={
   // Google Sheets config
-  apiUrl: ld("wip_apiUrl",""),  // Web App URL from Apps Script deployment
-  configured: ld("wip_configured",false),
+  apiUrl: ld("wip_apiUrl","https://script.google.com/macros/s/AKfycbxAOtzyXUBQo1Gr6g6mFLegsF7pLv0EPEUQJI6C95LX67YWHczUpmvI7VYHCVpFr7ALpg/exec"),  // Web App URL
+  configured: ld("wip_configured",true),
   // Auth
   unlocked:false,
   pin:ld("wip_pin",""),
