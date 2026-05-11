@@ -655,18 +655,27 @@ function buildSettings(){
   // Connection status
   var connCard=h("div",{style:{background:C.cardBg,border:"1px solid "+C.cardBorder,borderRadius:"16px",padding:"16px",marginBottom:"12px"}});
   connCard.appendChild(h("div",{style:{fontWeight:"700",fontSize:"14px",marginBottom:"8px"}},"Google Sheets Connection"));
+  // URL input always visible
+  connCard.appendChild(h("div",{style:{fontSize:"12px",color:C.muted,marginBottom:"8px",lineHeight:"1.5"}},"Paste your Google Apps Script Web App URL below:"));
+  var urlInp=h("input",{type:"url",placeholder:"https://script.google.com/macros/s/…/exec",style:Object.assign({},IS,{fontSize:"12px",marginBottom:"10px"})});
+  urlInp.value=S.apiUrl||"";
+  connCard.appendChild(urlInp);
+  var saveUrlBtn=h("button",{cls:"pressable",style:{width:"100%",padding:"12px",borderRadius:"10px",background:C.eerieBlack,border:"none",color:C.vanilla,fontFamily:FONT,fontWeight:"700",fontSize:"14px",cursor:"pointer",marginBottom:"8px"}},S.apiUrl?"Update URL":"Connect Google Sheets");
+  saveUrlBtn.addEventListener("click",function(){
+    var u=(urlInp.value||"").trim();
+    if(!u){toast("Please paste the URL first",true);return}
+    if(!u.startsWith("https://script.google.com")){toast("URL looks wrong — check again",true);return}
+    sv("wip_apiUrl",u);sv("wip_configured",true);S.apiUrl=u;S.configured=true;
+    toast("Connected! Syncing…");
+    setTimeout(syncFromSheet,500);
+    render();
+  });
+  connCard.appendChild(saveUrlBtn);
   if(S.apiUrl){
-    var connStatus=h("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"10px"}});
-    connStatus.appendChild(h("div",{style:{width:"8px",height:"8px",borderRadius:"50%",background:S.syncError?"#E05555":C.honeydewDark}}));
-    connStatus.appendChild(h("span",{style:{fontSize:"13px",color:C.mutedDark}},S.syncError?"Connection error":"Connected"));
+    var connStatus=h("div",{style:{display:"flex",alignItems:"center",gap:"6px",marginTop:"4px"}});
+    connStatus.appendChild(h("div",{style:{width:"7px",height:"7px",borderRadius:"50%",background:S.syncError?"#E05555":C.honeydewDark,flexShrink:"0"}}));
+    connStatus.appendChild(h("span",{style:{fontSize:"11px",color:C.muted}},S.syncError?"Sync error — check URL":"Connected · Last sync: "+(S.lastSync||"Never")));
     connCard.appendChild(connStatus);
-    connCard.appendChild(h("div",{style:{fontSize:"11px",color:C.muted,marginBottom:"12px",wordBreak:"break-all"}},S.apiUrl.substring(0,50)+"…"));
-    var changeBtn=h("button",{cls:"pressable",style:{padding:"8px 14px",borderRadius:"8px",background:C.aliceBlue,border:"1px solid "+C.cardBorder,color:C.eerieBlack,fontFamily:FONT,fontWeight:"600",fontSize:"13px",cursor:"pointer"},onclick:function(){var u=prompt("Enter new Web App URL:",S.apiUrl);if(u&&u.trim()){sv("wip_apiUrl",u.trim());S.apiUrl=u.trim();render();toast("URL updated")}}},"Change URL");
-    connCard.appendChild(changeBtn);
-  } else {
-    connCard.appendChild(h("div",{style:{fontSize:"13px",color:C.muted,marginBottom:"12px"}},"Not connected — running in offline mode"));
-    var connectBtn=h("button",{cls:"pressable",style:{width:"100%",padding:"10px",borderRadius:"8px",background:C.eerieBlack,border:"none",color:C.vanilla,fontFamily:FONT,fontWeight:"700",fontSize:"13px",cursor:"pointer"},onclick:function(){S.configured=false;render()}},"Connect Google Sheets");
-    connCard.appendChild(connectBtn);
   }
   w.appendChild(connCard);
 
