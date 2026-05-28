@@ -118,6 +118,80 @@ function set(patch){Object.assign(S,patch);render()}
 
 var IS={width:"100%",background:C.cardBg,border:"1.5px solid "+C.cardBorder,color:C.eerieBlack,borderRadius:"12px",padding:"13px 14px",fontSize:"14px",outline:"none",fontFamily:FONT};
 
+// ── IndexedDB for Screenshots (replaces localStorage) ─────────────
+var IDB_NAME="wip_studio_db";
+var IDB_STORE="screenshots";
+var _idb=null;
+
+function openIDB(cb){
+  if(_idb){cb(_idb);return;}
+  var req=indexedDB.open(IDB_NAME,1);
+  req.onupgradeneeded=function(e){
+    var d=e.target.result;
+    if(!d.objectStoreNames.contains(IDB_STORE))d.createObjectStore(IDB_STORE);
+  };
+  req.onsuccess=function(e){_idb=e.target.result;cb(_idb);};
+  req.onerror=function(){console.error("IDB open failed");cb(null);};
+}
+
+function saveScreenshotsIDB(id,shots,cb){
+  openIDB(function(d){
+    if(!d){if(cb)cb();return;}
+    var tx=d.transaction(IDB_STORE,"readwrite");
+    tx.objectStore(IDB_STORE).put(shots,id);
+    tx.oncomplete=function(){if(cb)cb();};
+    tx.onerror=function(){if(cb)cb();};
+  });
+}
+
+function deleteScreenshotsIDB(id){
+  openIDB(function(d){
+    if(!d)return;
+    d.transaction(IDB_STORE,"readwrite").objectStore(IDB_STORE).delete(id);
+  });
+}
+
+function getScreenshotsAsync(id,cb){
+  openIDB(function(d){
+    if(!d){cb([]);return;}
+    var req=d.transaction(IDB_STORE,"readonly").objectStore(IDB_STORE).get(id);
+    req.onsuccess=function(e){
+      var result=e.target.result||[];
+      // Migrate old localStorage shots if exist
+      if(!result.length){
+        try{var old=JSON.parse(localStorage.getItem("wip_shots")||"{}");result=old[id]||[];}catch(err){}
+        // Migrate to IDB and remove from localStorage
+        if(result.length){
+          saveScreenshotsIDB(id,result,function(){
+            try{var shots=JSON.parse(localStorage.getItem("wip_shots")||"{}");delete shots[id];localStorage.setItem("wip_shots",JSON.stringify(shots));}catch(er){}
+          });
+        }
+      }
+      cb(result);
+    };
+    req.onerror=function(){cb([]);};
+  });
+}
+
+// In-memory cache for current render cycle
+var _shotsCache={};
+
+function getScreenshots(id){
+  return _shotsCache[id]||[];
+}
+
+function prefetchAllScreenshots(ids,cb){
+  if(!ids||!ids.length){cb();return;}
+  var done=0;
+  ids.forEach(function(id){
+    getScreenshotsAsync(id,function(shots){
+      _shotsCache[id]=shots;
+      done++;
+      if(done===ids.length)cb();
+    });
+  });
+}
+
 // ── Firebase listeners ───────────────────────────────────────────
 function startListening(){
   expensesRef.on("value", function(snap){
@@ -127,13 +201,14 @@ function startListening(){
       Object.keys(data).forEach(function(k){
         list.push(Object.assign({},data[k],{id:k}));
       });
-      // Sort by date desc
       list.sort(function(a,b){return (b.date||"").localeCompare(a.date||"")});
     }
     S.expenses=list;
     S.syncing=false;
     S.online=true;
-    render();
+    // Prefetch all screenshots then render
+    var ids=list.map(function(e){return e.id});
+    prefetchAllScreenshots(ids,function(){render();});
   }, function(err){
     S.syncing=false;
     S.online=false;
@@ -145,18 +220,19 @@ function saveExpense(expense, isEdit, cb){
   var id=expense.id||gid();
   var data=Object.assign({},expense);
   delete data.id;
-  // Don't store screenshots in Firebase (too large) - keep locally
   delete data.screenshots;
   expensesRef.child(id).set(data, function(err){
     if(err){toast("Save failed — check connection",true);}
     else{
-      // Store screenshots locally mapped to id
       if(expense.screenshots&&expense.screenshots.length){
-        var shots=ld("wip_shots",{});
-        shots[id]=expense.screenshots;
-        sv("wip_shots",shots);
+        // Save to IndexedDB instead of localStorage
+        saveScreenshotsIDB(id, expense.screenshots, function(){
+          _shotsCache[id]=expense.screenshots;
+          if(cb)cb(id);
+        });
+      } else {
+        if(cb)cb(id);
       }
-      if(cb)cb(id);
     }
   });
   return id;
@@ -165,16 +241,9 @@ function saveExpense(expense, isEdit, cb){
 function deleteExpense(id){
   expensesRef.child(id).remove(function(err){
     if(err)toast("Delete failed",true);
-    // Also remove local screenshots
-    var shots=ld("wip_shots",{});
-    delete shots[id];
-    sv("wip_shots",shots);
   });
-}
-
-function getScreenshots(id){
-  var shots=ld("wip_shots",{});
-  return shots[id]||[];
+  deleteScreenshotsIDB(id);
+  delete _shotsCache[id];
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -263,7 +332,6 @@ function buildHeader(){
   var row=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"4px"}});
   var tl=h("div");
   tl.appendChild(h("div",{style:{fontSize:"17px",fontWeight:"800",letterSpacing:".5px",lineHeight:"1.1"}},"Work In Progress Studio"));
-  // Sync status
   var syncRow=h("div",{style:{display:"flex",alignItems:"center",gap:"6px",marginTop:"3px"}});
   if(S.syncing){
     syncRow.appendChild(h("span",{cls:"spinner"}));
@@ -316,7 +384,6 @@ function buildDash(){
   var tot=fil.reduce(function(s,e){return s+gMYR(e)},0);
   var w=h("div",{cls:"page"});
 
-  // Stats
   var g=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",padding:"20px 16px 0"}});
   g.appendChild(sc("Filtered Total",fRM(tot),true,false));
   g.appendChild(sc("Records Shown",fil.length,false,false));
@@ -324,14 +391,12 @@ function buildDash(){
   g.appendChild(sc("With Receipts",fil.filter(function(e){return getScreenshots(e.id).length>0}).length,false,true));
   w.appendChild(g);
 
-  // Search
   var sr=h("div",{style:{position:"relative",padding:"14px 16px 0"}});
   sr.appendChild(h("span",{style:{position:"absolute",left:"29px",top:"50%",transform:"translateY(-50%)",color:C.muted,fontSize:"14px",pointerEvents:"none"}},"○"));
   var si=h("input",{type:"text",placeholder:"Search expenses…",style:Object.assign({},IS,{paddingLeft:"40px"})});
   si.value=S.search||"";si.addEventListener("input",function(){S.search=this.value;render()});
   sr.appendChild(si);w.appendChild(sr);
 
-  // Filters
   var fr=h("div",{style:{padding:"10px 16px 4px",display:"flex",gap:"8px",overflowX:"auto"}});
   [{k:"fm",opts:["All"].concat(MON)},{k:"fc",opts:["All"].concat(S.categories)},{k:"fp",opts:["All"].concat(PLATFORMS.slice(0,-1))},{k:"fpy",opts:["All"].concat(PAYERS)}].forEach(function(fd){
     var active=S[fd.k]!=="All";
@@ -345,7 +410,6 @@ function buildDash(){
   }
   w.appendChild(fr);
 
-  // Transactions header
   var txhdr=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"18px 16px 10px"}});
   txhdr.appendChild(h("div",{style:{fontSize:"13px",fontWeight:"700",letterSpacing:"2px",color:C.muted,textTransform:"uppercase"}},"Transactions"));
   txhdr.appendChild(h("div",{style:{fontSize:"12px",color:C.muted}},fil.length+" records"));
@@ -376,7 +440,6 @@ function buildCard(e){
   var shots=getScreenshots(e.id);
   var card=h("div",{cls:"pressable",style:{background:C.cardBg,border:"1px solid "+C.cardBorder,borderRadius:"18px",overflow:"hidden",cursor:"pointer",boxShadow:"0 1px 4px rgba(33,33,33,.06)"}});
   var top=h("div",{style:{padding:"14px 16px",display:"flex",alignItems:"center",gap:"12px"}});
-  var catIdx=S.categories.indexOf(e.category);
   var icon=h("div",{style:{width:"44px",height:"44px",borderRadius:"13px",background:C.honeydew,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:"0",fontSize:"11px",fontWeight:"800",color:C.eerieBlack,textAlign:"center",lineHeight:"1.2",padding:"4px"}},e.category?e.category.slice(0,3).toUpperCase():"EXP");
   top.appendChild(icon);
   var mid=h("div",{style:{flex:"1",minWidth:"0"}});
@@ -480,7 +543,28 @@ function buildAdd(){
   form.appendChild(sv2);w.appendChild(form);return w;
 }
 
-function hFiles(files,f){Array.from(files).forEach(function(file){var r=new FileReader();r.onload=function(ev){f.screenshots=(f.screenshots||[]).concat([ev.target.result]);S.form=f;render()};r.readAsDataURL(file)})}
+function hFiles(files,f){
+  Array.from(files).forEach(function(file){
+    // Compress image before storing
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      var img=new Image();
+      img.onload=function(){
+        var canvas=document.createElement("canvas");
+        var MAX=1200;
+        var w=img.width,hw=img.height;
+        if(w>MAX){hw=Math.round(hw*MAX/w);w=MAX;}
+        canvas.width=w;canvas.height=hw;
+        canvas.getContext("2d").drawImage(img,0,0,w,hw);
+        var compressed=canvas.toDataURL("image/jpeg",0.75);
+        f.screenshots=(f.screenshots||[]).concat([compressed]);
+        S.form=f;render();
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function openEdit(id){
   var e=S.expenses.find(function(x){return x.id===id});
@@ -533,7 +617,6 @@ function buildMonthly(){
   if(totRMB>0){var c2=h("div",{style:{flex:"1",textAlign:"center",borderLeft:"1px solid "+C.vanillaDark+"44"}});c2.appendChild(h("div",{style:{fontSize:"18px",fontWeight:"900"}},fRMB(totRMB)));c2.appendChild(h("div",{style:{fontSize:"10px",color:C.mutedDark,letterSpacing:"1.5px",textTransform:"uppercase",marginTop:"2px"}},"In RMB"));hs.appendChild(c2)}
   hero.appendChild(hs);w.appendChild(hero);
   if(!me.length){w.appendChild(h("div",{style:{textAlign:"center",padding:"40px 20px",color:C.muted,fontWeight:"600"}},"No expenses this month"));return w}
-  // By cat
   var bc={};me.forEach(function(e){bc[e.category]=(bc[e.category]||0)+gMYR(e)});
   var ca=Object.keys(bc).map(function(k){return{n:k,v:bc[k]}}).sort(function(a,b){return b.v-a.v});
   if(ca.length){
@@ -559,14 +642,12 @@ function buildMonthly(){
     });
     w.appendChild(cs);
   }
-  // Trend
   var tdata=[];for(var i=5;i>=0;i--){var dd=new Date(S.selY,S.selM-i,1);var mi=dd.getMonth(),yr=dd.getFullYear();var tot=S.expenses.filter(function(e){var p=(e.date||"").split("-");return parseInt(p[1])-1===mi&&parseInt(p[0])===yr}).reduce(function(s,e){return s+gMYR(e)},0);tdata.push({n:MON[mi],v:tot})}
   var mx=Math.max.apply(null,tdata.map(function(d){return d.v}))||1;
   var ts=msec("6-Month Trend");
   var tc=h("div",{style:{display:"flex",alignItems:"flex-end",gap:"6px",height:"96px",marginBottom:"6px"}});
   tdata.forEach(function(d,i){var isNow=i===tdata.length-1;var col=h("div",{style:{flex:"1",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px"}});var bw=h("div",{style:{width:"100%",display:"flex",flexDirection:"column",justifyContent:"flex-end",height:"76px"}});bw.appendChild(h("div",{style:{width:"100%",borderRadius:"4px 4px 0 0",height:Math.max(3,Math.round(d.v/mx*76))+"px",background:isNow?C.eerieBlack:C.cardBorder}}));col.appendChild(bw);col.appendChild(h("div",{style:{fontSize:"10px",color:isNow?C.eerieBlack:C.muted,fontWeight:isNow?"700":"400"}},d.n));tc.appendChild(col)});
   ts.appendChild(tc);w.appendChild(ts);
-  // By payer
   var bp={};me.forEach(function(e){bp[e.paidBy]=(bp[e.paidBy]||0)+gMYR(e)});
   var pa=Object.keys(bp).map(function(k){return{n:k,v:bp[k]}});
   if(pa.length){var ps=msec("By Paid By");pa.forEach(function(d,i){var pct=totMYR>0?d.v/totMYR*100:0;var row=h("div",{style:{marginBottom:"12px"}});var lbl=h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"5px"}});lbl.appendChild(h("span",{style:{fontSize:"13px",fontWeight:"600"}},d.n));lbl.appendChild(h("span",{style:{fontSize:"13px",fontWeight:"700"}},fRM(d.v)));row.appendChild(lbl);var bb=h("div",{style:{height:"4px",background:C.aliceBlue,borderRadius:"2px",overflow:"hidden"}});var bf=h("div",{style:{height:"100%",background:CC[i%CC.length],borderRadius:"2px",width:"0",transition:"width .5s ease"}});bb.appendChild(bf);row.appendChild(bb);ps.appendChild(row);setTimeout(function(){bf.style.width=pct+"%"},60)});w.appendChild(ps)}
